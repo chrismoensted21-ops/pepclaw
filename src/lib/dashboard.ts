@@ -1,24 +1,24 @@
 /**
- * Shapes the SQLite state into a dashboard payload that mirrors the panel
- * structure of /app. One query, one aggregated view.
+ * Shapes the persisted swarm state into a dashboard payload that mirrors the
+ * panel structure of /app. One pass over Supabase, one aggregated view.
  */
 import {
   dashboardSummary,
   listMissions,
-  listMissionTasks,
   listFindings,
   listTheses,
   listCritiques,
   listDossiers,
   poolStats,
   getMission,
+  type DashboardSummary,
 } from "./repo";
 import { ALL_POOLS, POOL_DESC, POOL_LABEL, POOL_TIER, type AgentPool } from "./types";
 import { formatDuration, formatRelativeUtc, nowUtcLabel } from "./utils";
 
 export interface DashboardPayload {
   header: { timestamp: string; status: string; environment: string; region: string };
-  summary: ReturnType<typeof dashboardSummary>;
+  summary: DashboardSummary;
   liveMission: LiveMissionView | null;
   swarm: SwarmGraph;
   pipeline: PipelineStage[];
@@ -127,7 +127,7 @@ export interface CritiqueRow {
   persona: string;
   severity: string;
   specific_concern: string;
-  blocks: number;
+  blocks: boolean;
 }
 export interface DossierRow {
   id: string;
@@ -138,14 +138,16 @@ export interface DossierRow {
   created_at: string;
 }
 
-export function buildDashboard(focusMissionId?: string | null): DashboardPayload {
-  const summary = dashboardSummary();
-  const allMissions = listMissions(50);
+export async function buildDashboard(focusMissionId?: string | null): Promise<DashboardPayload> {
+  const [summary, allMissions, ps] = await Promise.all([
+    dashboardSummary(),
+    listMissions(50),
+    poolStats(),
+  ]);
   const focus = focusMissionId
-    ? getMission(focusMissionId)
+    ? await getMission(focusMissionId)
     : allMissions.find((m) => m.status === "running") ?? allMissions[0] ?? null;
 
-  const ps = poolStats();
   const psByPool = new Map(ps.map((p) => [p.pool, p]));
 
   const swarmNodes: SwarmNode[] = [
@@ -203,9 +205,9 @@ export function buildDashboard(focusMissionId?: string | null): DashboardPayload
   const redteam = pickPct(["red_team"]);
   const synth = pickPct(["synthesizer"]);
   const draft = pickPct(["dossier_assembler"]);
-  const allFindings = focus ? listFindings(focus.id) : [];
+  const allFindings = focus ? await listFindings(focus.id) : [];
   const aOrB = allFindings.filter((f) => f.evidence_grade === "A" || f.evidence_grade === "B").length;
-  const dossiersList = focus ? listDossiers(focus.id) : [];
+  const dossiersList = focus ? await listDossiers(focus.id) : [];
   const deliveredDossiers = dossiersList.filter((d) => d.doc_type === "dossier").length;
 
   const pipeline: PipelineStage[] = [
@@ -279,8 +281,8 @@ export function buildDashboard(focusMissionId?: string | null): DashboardPayload
   };
 
   // Deliverables (focus mission)
-  const focusTheses = focus ? listTheses(focus.id) : [];
-  const focusCritiques = focus ? listCritiques(focus.id) : [];
+  const focusTheses = focus ? await listTheses(focus.id) : [];
+  const focusCritiques = focus ? await listCritiques(focus.id) : [];
   const synthDocs = dossiersList.filter((d) => d.doc_type === "synthesis");
   const dossiersOnly = dossiersList.filter((d) => d.doc_type === "dossier");
   const deliverables: DeliverableRow[] = [
@@ -448,7 +450,7 @@ function prettySource(k: string): string {
   }
 }
 
-function confidenceMix(s: ReturnType<typeof dashboardSummary>): { label: string; pct: number }[] {
+function confidenceMix(s: DashboardSummary): { label: string; pct: number }[] {
   const total =
     s.grade_a_findings +
     s.grade_b_findings +

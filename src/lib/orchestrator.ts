@@ -55,7 +55,7 @@ const DEFAULT_DAG: Layer[] = [
 ];
 
 export async function startMission(input: StartInput): Promise<string> {
-  const mission = createMission({
+  const mission = await createMission({
     query: input.query,
     target_class: input.target_class ?? null,
     depth: input.depth ?? "standard",
@@ -63,15 +63,15 @@ export async function startMission(input: StartInput): Promise<string> {
   });
 
   const c = commit(mission.query, mission.target_class);
-  updateMissionStatus(mission.id, "queued", {
+  await updateMissionStatus(mission.id, "queued", {
     commit_hash: c.hash,
     commit_salt: null, // salt revealed only on completion
   });
-  recordEvent("mission.committed", { mission_id: mission.id, commit_hash: c.hash });
+  await recordEvent("mission.committed", { mission_id: mission.id, commit_hash: c.hash });
 
   // Persist salt in-memory for the duration of the run (revealed at completion).
-  void runMissionAsync(mission.id, c.salt).catch((e) => {
-    updateMissionStatus(mission.id, "failed", {
+  void runMissionAsync(mission.id, c.salt).catch(async (e) => {
+    await updateMissionStatus(mission.id, "failed", {
       completed_at: new Date().toISOString(),
       failure_reason: (e as Error).message ?? String(e),
     });
@@ -82,23 +82,25 @@ export async function startMission(input: StartInput): Promise<string> {
 
 async function runMissionAsync(missionId: string, salt: string): Promise<void> {
   const startedAt = new Date().toISOString();
-  updateMissionStatus(missionId, "running", { started_at: startedAt });
-  recordEvent("mission.started", { mission_id: missionId });
+  await updateMissionStatus(missionId, "running", { started_at: startedAt });
+  await recordEvent("mission.started", { mission_id: missionId });
 
-  const mission = getMission(missionId);
+  const mission = await getMission(missionId);
   if (!mission) throw new Error("Mission disappeared");
 
   let agentIndex = 0;
   let spent = 0;
 
   for (const layer of DEFAULT_DAG) {
-    const tasks = layer.pools.map((pool) => ({
-      pool,
-      task: createTask(missionId, pool, agentIndex++),
-    }));
+    const tasks = await Promise.all(
+      layer.pools.map(async (pool) => ({
+        pool,
+        task: await createTask(missionId, pool, agentIndex++),
+      }))
+    );
 
     const work = tasks.map(async ({ pool, task }) => {
-      setTaskRunning(task.id);
+      await setTaskRunning(task.id);
       const runner = AGENT_RUNNERS[pool];
       try {
         const result = await runner({
@@ -108,11 +110,11 @@ async function runMissionAsync(missionId: string, salt: string): Promise<void> {
           taskId: task.id,
           agentIndex: task.agent_index,
         });
-        setTaskCompleted(task.id, result);
+        await setTaskCompleted(task.id, result);
         if (typeof result?.cost_cents === "number") spent += result.cost_cents;
       } catch (e) {
-        setTaskFailed(task.id, (e as Error).message ?? String(e));
-        recordEvent("agent.error", {
+        await setTaskFailed(task.id, (e as Error).message ?? String(e));
+        await recordEvent("agent.error", {
           mission_id: missionId,
           pool,
           error: (e as Error).message,
@@ -128,11 +130,11 @@ async function runMissionAsync(missionId: string, salt: string): Promise<void> {
   }
 
   const completedAt = new Date().toISOString();
-  updateMissionStatus(missionId, "completed", {
+  await updateMissionStatus(missionId, "completed", {
     completed_at: completedAt,
     spent_cents: spent,
     commit_salt: salt,
     revealed_at: completedAt,
   });
-  recordEvent("mission.completed", { mission_id: missionId, spent_cents: spent });
+  await recordEvent("mission.completed", { mission_id: missionId, spent_cents: spent });
 }

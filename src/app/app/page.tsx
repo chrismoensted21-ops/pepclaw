@@ -4,8 +4,8 @@ import { buildDashboard } from "@/lib/dashboard";
 
 export const dynamic = "force-dynamic";
 
-export default function AppPage() {
-  const initial = buildDashboard();
+export default async function AppPage() {
+  const initial = await buildDashboard();
   return (
     <main className="relative min-h-screen bg-black text-ink-100">
       <div className="absolute inset-0 -z-10">

@@ -9,7 +9,7 @@ export async function runLiteratureMiner(ctx: AgentContext) {
   let added = 0;
   for (const h of hits) {
     const grade = preGradeByPubType(h.pubTypes);
-    addFinding({
+    await addFinding({
       mission_id: ctx.missionId,
       task_id: ctx.taskId,
       pool: "literature_miner",

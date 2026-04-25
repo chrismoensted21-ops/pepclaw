@@ -7,13 +7,15 @@ import type { AgentContext } from "./index";
  * heuristically from sequence properties present in upstream findings.
  */
 export async function runAdmet(ctx: AgentContext) {
-  const seqFindings = listFindings(ctx.missionId).filter((f) => f.pool === "sequence_structure");
+  const seqFindings = (await listFindings(ctx.missionId)).filter(
+    (f) => f.pool === "sequence_structure"
+  );
   let added = 0;
   for (const sf of seqFindings.slice(0, 4)) {
-    const meta = safeJson<Record<string, unknown>>(sf.metadata);
-    const seqHead = String(meta?.sequence_head ?? "");
+    const meta = (sf.metadata ?? {}) as Record<string, unknown>;
+    const seqHead = String(meta.sequence_head ?? "");
     const card = score(seqHead);
-    addFinding({
+    await addFinding({
       mission_id: ctx.missionId,
       task_id: ctx.taskId,
       pool: "admet_developability",
@@ -69,13 +71,4 @@ function score(seq: string): {
 
 function clamp01(n: number): number {
   return Math.max(0, Math.min(1, n));
-}
-
-function safeJson<T>(s: string | null): T | null {
-  if (!s) return null;
-  try {
-    return JSON.parse(s) as T;
-  } catch {
-    return null;
-  }
 }

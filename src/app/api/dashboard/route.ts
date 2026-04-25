@@ -6,5 +6,5 @@ export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
   const focus = req.nextUrl.searchParams.get("mission_id");
-  return NextResponse.json(buildDashboard(focus));
+  return NextResponse.json(await buildDashboard(focus));
 }

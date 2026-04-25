@@ -7,7 +7,7 @@ export async function runVariantLinker(ctx: AgentContext) {
   const hits = await searchTargets(query, 4).catch(() => []);
   let added = 0;
   for (const h of hits) {
-    addFinding({
+    await addFinding({
       mission_id: ctx.missionId,
       task_id: ctx.taskId,
       pool: "variant_linker",

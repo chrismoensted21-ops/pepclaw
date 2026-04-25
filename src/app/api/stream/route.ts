@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
  */
 export async function GET(req: NextRequest) {
   const missionId = req.nextUrl.searchParams.get("mission_id");
-  let cursor = lastEventId();
+  let cursor = await lastEventId();
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
@@ -23,7 +23,7 @@ export async function GET(req: NextRequest) {
 
       const tick = async () => {
         try {
-          const evs = eventsSince(cursor, missionId, 200);
+          const evs = await eventsSince(cursor, missionId, 200);
           if (evs.length > 0) {
             cursor = evs[evs.length - 1].id;
             for (const e of evs) {
@@ -33,7 +33,7 @@ export async function GET(req: NextRequest) {
                 kind: e.kind,
                 pool: e.pool,
                 mission_id: e.mission_id,
-                payload: e.payload ? JSON.parse(e.payload) : null,
+                payload: e.payload ?? null,
                 created_at: e.created_at,
               });
             }

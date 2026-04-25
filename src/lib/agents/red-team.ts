@@ -15,14 +15,14 @@ interface CritiquesPayload {
 }
 
 export async function runRedTeam(ctx: AgentContext) {
-  const theses = listTheses(ctx.missionId);
+  const theses = await listTheses(ctx.missionId);
   if (theses.length === 0) return { summary: "No theses to critique." };
 
   let total = 0;
   let blocks = 0;
 
   for (const t of theses) {
-    const findings = listFindings(ctx.missionId).slice(0, 8);
+    const findings = (await listFindings(ctx.missionId)).slice(0, 8);
     const evidenceLine = findings.map((f) => `- ${f.evidence_grade ?? "?"} ${f.source_ref} ${truncate(f.title ?? "", 100)}`).join("\n");
 
     const sys = `You are a 3-persona red team. Output strict JSON: {"critiques": [...]}.
@@ -57,7 +57,7 @@ Produce one critique per persona (3 total).`;
     let blockedHere = false;
     for (const r of rows) {
       const allowedBlock = r.persona === "senior_reviewer" && r.blocks === true;
-      addCritique({
+      await addCritique({
         mission_id: ctx.missionId,
         thesis_id: t.id,
         persona: r.persona,
@@ -71,10 +71,10 @@ Produce one critique per persona (3 total).`;
       total++;
     }
     if (blockedHere) {
-      updateThesisStatus(t.id, "blocked");
+      await updateThesisStatus(t.id, "blocked");
       blocks++;
     } else {
-      updateThesisStatus(t.id, "qa_pending");
+      await updateThesisStatus(t.id, "qa_pending");
     }
   }
 

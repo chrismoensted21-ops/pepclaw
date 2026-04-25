@@ -10,7 +10,7 @@ export async function runSequenceStructure(ctx: AgentContext) {
   for (const e of entries) {
     const af = e.accession ? await lookupAlphaFold(e.accession).catch(() => null) : null;
     const tractability = scoreTractability(e.length, af?.meanPlddt ?? null);
-    addFinding({
+    await addFinding({
       mission_id: ctx.missionId,
       task_id: ctx.taskId,
       pool: "sequence_structure",

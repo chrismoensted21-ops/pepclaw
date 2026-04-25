@@ -7,7 +7,7 @@ import type { AgentContext } from "./index";
  * signals from PubMed metadata (publication type, MeSH terms) and ChEMBL ligand counts.
  */
 export async function runPatentCompetitive(ctx: AgentContext) {
-  const findings = listFindings(ctx.missionId);
+  const findings = await listFindings(ctx.missionId);
   const chembl = findings.filter((f) => f.source_type === "chembl");
   const lit = findings.filter((f) => f.source_type === "pubmed");
   if (chembl.length === 0 && lit.length === 0) {
@@ -16,7 +16,7 @@ export async function runPatentCompetitive(ctx: AgentContext) {
 
   const targets = new Map<string, { liganded: number; papers: number }>();
   for (const f of chembl) {
-    const meta = safeJson<{ knownLigands?: number }>(f.metadata) ?? {};
+    const meta = (f.metadata ?? {}) as { knownLigands?: number };
     const t = f.target ?? f.title ?? "unknown";
     const cur = targets.get(t) ?? { liganded: 0, papers: 0 };
     cur.liganded += meta.knownLigands ?? 0;
@@ -32,7 +32,7 @@ export async function runPatentCompetitive(ctx: AgentContext) {
   for (const [target, { liganded, papers }] of targets) {
     const density = liganded > 5000 ? "Crowded" : liganded > 500 ? "Moderate" : "Whitespace";
     const ftoRisk = liganded > 5000 ? "Elevated" : liganded > 500 ? "Moderate" : "Low";
-    addFinding({
+    await addFinding({
       mission_id: ctx.missionId,
       task_id: ctx.taskId,
       pool: "patent_competitive",
@@ -54,13 +54,4 @@ export async function runPatentCompetitive(ctx: AgentContext) {
     added++;
   }
   return { summary: `${added} patent-landscape readings produced` };
-}
-
-function safeJson<T>(s: string | null): T | null {
-  if (!s) return null;
-  try {
-    return JSON.parse(s) as T;
-  } catch {
-    return null;
-  }
 }

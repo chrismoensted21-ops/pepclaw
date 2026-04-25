@@ -1,5 +1,7 @@
 /**
- * Thin repository over SQLite. All swarm state goes through this layer.
+ * Repository over Supabase Postgres. All swarm state goes through this layer.
+ * Every function is async; rows are returned as the typed shapes from
+ * `./types` (jsonb columns come back as parsed objects, not strings).
  */
 import { getDb } from "./db";
 import type {
@@ -12,13 +14,16 @@ import type {
   MissionStatus,
   SwarmEvent,
   Task,
-  TaskStatus,
   Thesis,
 } from "./types";
 import { shortId } from "./utils";
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+function genId(prefix: string): string {
+  return `${prefix}_` + shortId().replace(/-/g, "").slice(0, 16);
 }
 
 export interface NewMissionInput {
@@ -28,44 +33,64 @@ export interface NewMissionInput {
   budget_cents?: number;
 }
 
-export function createMission(input: NewMissionInput): Mission {
+export async function createMission(input: NewMissionInput): Promise<Mission> {
   const db = getDb();
-  const id = "msn_" + shortId().replace(/-/g, "").slice(0, 16);
-  const created_at = nowIso();
-  db.prepare(
-    `INSERT INTO missions (id, query, target_class, depth, status, budget_cents, spent_cents, created_at)
-     VALUES (?, ?, ?, ?, 'queued', ?, 0, ?)`
-  ).run(
-    id,
-    input.query,
-    input.target_class ?? null,
-    input.depth ?? "standard",
-    input.budget_cents ?? 800,
-    created_at
-  );
-  recordEvent("mission.created", { mission_id: id });
-  return getMission(id)!;
+  const id = genId("msn");
+  const { data, error } = await db
+    .from("missions")
+    .insert({
+      id,
+      query: input.query,
+      target_class: input.target_class ?? null,
+      depth: input.depth ?? "standard",
+      status: "queued",
+      budget_cents: input.budget_cents ?? 800,
+      spent_cents: 0,
+    })
+    .select("*")
+    .single();
+  if (error) throw new Error(`createMission failed: ${error.message}`);
+  await recordEvent("mission.created", { mission_id: id });
+  return data as Mission;
 }
 
-export function getMission(id: string): Mission | null {
-  return (getDb().prepare(`SELECT * FROM missions WHERE id = ?`).get(id) as Mission | undefined) ?? null;
+export async function getMission(id: string): Promise<Mission | null> {
+  const { data, error } = await getDb()
+    .from("missions")
+    .select("*")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw new Error(`getMission failed: ${error.message}`);
+  return (data as Mission | null) ?? null;
 }
 
-export function listMissions(limit = 100): Mission[] {
-  return getDb()
-    .prepare(`SELECT * FROM missions ORDER BY datetime(created_at) DESC LIMIT ?`)
-    .all(limit) as Mission[];
+export async function listMissions(limit = 100): Promise<Mission[]> {
+  const { data, error } = await getDb()
+    .from("missions")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) throw new Error(`listMissions failed: ${error.message}`);
+  return (data ?? []) as Mission[];
 }
 
-export function updateMissionStatus(
+export async function updateMissionStatus(
   id: string,
   status: MissionStatus,
-  extras: Partial<Pick<Mission, "started_at" | "completed_at" | "failure_reason" | "spent_cents" | "commit_hash" | "commit_salt" | "revealed_at">> = {}
-): void {
-  const db = getDb();
-  const fields: string[] = ["status = ?"];
-  const values: (string | number | null)[] = [status];
-
+  extras: Partial<
+    Pick<
+      Mission,
+      | "started_at"
+      | "completed_at"
+      | "failure_reason"
+      | "spent_cents"
+      | "commit_hash"
+      | "commit_salt"
+      | "revealed_at"
+    >
+  > = {}
+): Promise<void> {
+  const patch: Record<string, unknown> = { status };
   for (const k of [
     "started_at",
     "completed_at",
@@ -75,62 +100,104 @@ export function updateMissionStatus(
     "commit_salt",
     "revealed_at",
   ] as const) {
-    if (k in extras && extras[k] !== undefined) {
-      fields.push(`${k} = ?`);
-      values.push(extras[k] as string | number | null);
-    }
+    if (k in extras && extras[k] !== undefined) patch[k] = extras[k];
   }
-  values.push(id);
-  db.prepare(`UPDATE missions SET ${fields.join(", ")} WHERE id = ?`).run(...values);
-  recordEvent("mission.status", { mission_id: id, status });
+  const { error } = await getDb().from("missions").update(patch).eq("id", id);
+  if (error) throw new Error(`updateMissionStatus failed: ${error.message}`);
+  await recordEvent("mission.status", { mission_id: id, status });
 }
 
-export function createTask(missionId: string, pool: AgentPool, agentIndex = 0, input?: unknown): Task {
+export async function createTask(
+  missionId: string,
+  pool: AgentPool,
+  agentIndex = 0,
+  input?: unknown
+): Promise<Task> {
   const db = getDb();
-  const id = "tsk_" + shortId().replace(/-/g, "").slice(0, 16);
-  const created_at = nowIso();
-  db.prepare(
-    `INSERT INTO tasks (id, mission_id, pool, agent_index, status, input, created_at)
-     VALUES (?, ?, ?, ?, 'queued', ?, ?)`
-  ).run(id, missionId, pool, agentIndex, input ? JSON.stringify(input) : null, created_at);
-  recordEvent("task.created", { mission_id: missionId, pool, task_id: id });
-  return db.prepare(`SELECT * FROM tasks WHERE id = ?`).get(id) as Task;
+  const id = genId("tsk");
+  const { data, error } = await db
+    .from("tasks")
+    .insert({
+      id,
+      mission_id: missionId,
+      pool,
+      agent_index: agentIndex,
+      status: "queued",
+      input: input ?? null,
+    })
+    .select("*")
+    .single();
+  if (error) throw new Error(`createTask failed: ${error.message}`);
+  await recordEvent("task.created", { mission_id: missionId, pool, task_id: id });
+  return data as Task;
 }
 
-export function setTaskRunning(taskId: string): void {
-  getDb()
-    .prepare(`UPDATE tasks SET status = 'running', started_at = ? WHERE id = ?`)
-    .run(nowIso(), taskId);
-  const t = getDb().prepare(`SELECT mission_id, pool FROM tasks WHERE id = ?`).get(taskId) as
-    | { mission_id: string; pool: AgentPool }
-    | undefined;
-  if (t) recordEvent("task.running", { mission_id: t.mission_id, pool: t.pool, task_id: taskId });
+export async function setTaskRunning(taskId: string): Promise<void> {
+  const db = getDb();
+  const { error } = await db
+    .from("tasks")
+    .update({ status: "running", started_at: nowIso() })
+    .eq("id", taskId);
+  if (error) throw new Error(`setTaskRunning failed: ${error.message}`);
+  const { data } = await db
+    .from("tasks")
+    .select("mission_id, pool")
+    .eq("id", taskId)
+    .maybeSingle();
+  if (data) {
+    await recordEvent("task.running", {
+      mission_id: data.mission_id,
+      pool: data.pool as AgentPool,
+      task_id: taskId,
+    });
+  }
 }
 
-export function setTaskCompleted(taskId: string, output?: unknown): void {
-  getDb()
-    .prepare(`UPDATE tasks SET status = 'completed', completed_at = ?, output = ? WHERE id = ?`)
-    .run(nowIso(), output ? JSON.stringify(output).slice(0, 60_000) : null, taskId);
-  const t = getDb().prepare(`SELECT mission_id, pool FROM tasks WHERE id = ?`).get(taskId) as
-    | { mission_id: string; pool: AgentPool }
-    | undefined;
-  if (t) recordEvent("task.completed", { mission_id: t.mission_id, pool: t.pool, task_id: taskId });
+export async function setTaskCompleted(taskId: string, output?: unknown): Promise<void> {
+  const db = getDb();
+  const { error } = await db
+    .from("tasks")
+    .update({ status: "completed", completed_at: nowIso(), output: output ?? null })
+    .eq("id", taskId);
+  if (error) throw new Error(`setTaskCompleted failed: ${error.message}`);
+  const { data } = await db
+    .from("tasks")
+    .select("mission_id, pool")
+    .eq("id", taskId)
+    .maybeSingle();
+  if (data) {
+    await recordEvent("task.completed", {
+      mission_id: data.mission_id,
+      pool: data.pool as AgentPool,
+      task_id: taskId,
+    });
+  }
 }
 
-export function setTaskFailed(taskId: string, error: string): void {
-  getDb()
-    .prepare(`UPDATE tasks SET status = 'failed', completed_at = ?, error = ? WHERE id = ?`)
-    .run(nowIso(), error.slice(0, 4000), taskId);
-  const t = getDb().prepare(`SELECT mission_id, pool FROM tasks WHERE id = ?`).get(taskId) as
-    | { mission_id: string; pool: AgentPool }
-    | undefined;
-  if (t)
-    recordEvent("task.failed", {
-      mission_id: t.mission_id,
-      pool: t.pool,
+export async function setTaskFailed(taskId: string, error: string): Promise<void> {
+  const db = getDb();
+  const { error: updErr } = await db
+    .from("tasks")
+    .update({
+      status: "failed",
+      completed_at: nowIso(),
+      error: error.slice(0, 4000),
+    })
+    .eq("id", taskId);
+  if (updErr) throw new Error(`setTaskFailed failed: ${updErr.message}`);
+  const { data } = await db
+    .from("tasks")
+    .select("mission_id, pool")
+    .eq("id", taskId)
+    .maybeSingle();
+  if (data) {
+    await recordEvent("task.failed", {
+      mission_id: data.mission_id,
+      pool: data.pool as AgentPool,
       task_id: taskId,
       error,
     });
+  }
 }
 
 export interface NewFindingInput {
@@ -148,41 +215,45 @@ export interface NewFindingInput {
   metadata?: Record<string, unknown>;
 }
 
-export function addFinding(input: NewFindingInput): Finding {
+export async function addFinding(input: NewFindingInput): Promise<Finding> {
   const db = getDb();
-  const id = "fnd_" + shortId().replace(/-/g, "").slice(0, 16);
-  const created_at = nowIso();
-  db.prepare(
-    `INSERT INTO findings (id, mission_id, task_id, pool, source_type, source_ref, title, content, url, relevance_score, evidence_grade, target, metadata, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    id,
-    input.mission_id,
-    input.task_id ?? null,
-    input.pool,
-    input.source_type,
-    input.source_ref,
-    input.title ?? null,
-    input.content,
-    input.url ?? null,
-    input.relevance_score ?? null,
-    input.evidence_grade ?? null,
-    input.target ?? null,
-    input.metadata ? JSON.stringify(input.metadata) : null,
-    created_at
-  );
-  recordEvent("finding.added", {
+  const id = genId("fnd");
+  const { data, error } = await db
+    .from("findings")
+    .insert({
+      id,
+      mission_id: input.mission_id,
+      task_id: input.task_id ?? null,
+      pool: input.pool,
+      source_type: input.source_type,
+      source_ref: input.source_ref,
+      title: input.title ?? null,
+      content: input.content,
+      url: input.url ?? null,
+      relevance_score: input.relevance_score ?? null,
+      evidence_grade: input.evidence_grade ?? null,
+      target: input.target ?? null,
+      metadata: input.metadata ?? null,
+    })
+    .select("*")
+    .single();
+  if (error) throw new Error(`addFinding failed: ${error.message}`);
+  await recordEvent("finding.added", {
     mission_id: input.mission_id,
     pool: input.pool,
     source_ref: input.source_ref,
   });
-  return db.prepare(`SELECT * FROM findings WHERE id = ?`).get(id) as Finding;
+  return data as Finding;
 }
 
-export function listFindings(missionId: string): Finding[] {
-  return getDb()
-    .prepare(`SELECT * FROM findings WHERE mission_id = ? ORDER BY datetime(created_at) ASC`)
-    .all(missionId) as Finding[];
+export async function listFindings(missionId: string): Promise<Finding[]> {
+  const { data, error } = await getDb()
+    .from("findings")
+    .select("*")
+    .eq("mission_id", missionId)
+    .order("created_at", { ascending: true });
+  if (error) throw new Error(`listFindings failed: ${error.message}`);
+  return (data ?? []) as Finding[];
 }
 
 export interface NewThesisInput {
@@ -197,51 +268,49 @@ export interface NewThesisInput {
   status?: string;
 }
 
-export function addThesis(input: NewThesisInput): Thesis {
+export async function addThesis(input: NewThesisInput): Promise<Thesis> {
   const db = getDb();
-  const id = "ths_" + shortId().replace(/-/g, "").slice(0, 16);
-  const created_at = nowIso();
-  db.prepare(
-    `INSERT INTO theses (id, mission_id, title, hypothesis, mechanism, target, evidence_summary, conviction, evidence_grade, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    id,
-    input.mission_id,
-    input.title,
-    input.hypothesis,
-    input.mechanism ?? null,
-    input.target ?? null,
-    input.evidence_summary ?? null,
-    input.conviction ?? null,
-    input.evidence_grade ?? null,
-    input.status ?? "draft",
-    created_at
-  );
-  recordEvent("thesis.added", { mission_id: input.mission_id, thesis_id: id });
-  return db.prepare(`SELECT * FROM theses WHERE id = ?`).get(id) as Thesis;
+  const id = genId("ths");
+  const { data, error } = await db
+    .from("theses")
+    .insert({
+      id,
+      mission_id: input.mission_id,
+      title: input.title,
+      hypothesis: input.hypothesis,
+      mechanism: input.mechanism ?? null,
+      target: input.target ?? null,
+      evidence_summary: input.evidence_summary ?? null,
+      conviction: input.conviction ?? null,
+      evidence_grade: input.evidence_grade ?? null,
+      status: input.status ?? "draft",
+    })
+    .select("*")
+    .single();
+  if (error) throw new Error(`addThesis failed: ${error.message}`);
+  await recordEvent("thesis.added", { mission_id: input.mission_id, thesis_id: id });
+  return data as Thesis;
 }
 
-export function listTheses(missionId: string): Thesis[] {
-  return getDb()
-    .prepare(`SELECT * FROM theses WHERE mission_id = ? ORDER BY datetime(created_at) ASC`)
-    .all(missionId) as Thesis[];
+export async function listTheses(missionId: string): Promise<Thesis[]> {
+  const { data, error } = await getDb()
+    .from("theses")
+    .select("*")
+    .eq("mission_id", missionId)
+    .order("created_at", { ascending: true });
+  if (error) throw new Error(`listTheses failed: ${error.message}`);
+  return (data ?? []) as Thesis[];
 }
 
-export function updateThesisStatus(
+export async function updateThesisStatus(
   thesisId: string,
   status: string,
   conviction?: number | null
-): void {
-  const db = getDb();
-  if (conviction !== undefined) {
-    db.prepare(`UPDATE theses SET status = ?, conviction = ? WHERE id = ?`).run(
-      status,
-      conviction,
-      thesisId
-    );
-  } else {
-    db.prepare(`UPDATE theses SET status = ? WHERE id = ?`).run(status, thesisId);
-  }
+): Promise<void> {
+  const patch: Record<string, unknown> = { status };
+  if (conviction !== undefined) patch.conviction = conviction;
+  const { error } = await getDb().from("theses").update(patch).eq("id", thesisId);
+  if (error) throw new Error(`updateThesisStatus failed: ${error.message}`);
 }
 
 export interface NewCritiqueInput {
@@ -255,37 +324,41 @@ export interface NewCritiqueInput {
   blocks?: boolean;
 }
 
-export function addCritique(input: NewCritiqueInput): Critique {
+export async function addCritique(input: NewCritiqueInput): Promise<Critique> {
   const db = getDb();
-  const id = "crt_" + shortId().replace(/-/g, "").slice(0, 16);
-  const created_at = nowIso();
-  db.prepare(
-    `INSERT INTO critiques (id, mission_id, thesis_id, persona, severity, category, specific_concern, suggested_fix, blocks, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    id,
-    input.mission_id,
-    input.thesis_id,
-    input.persona,
-    input.severity,
-    input.category ?? null,
-    input.specific_concern,
-    input.suggested_fix ?? null,
-    input.blocks ? 1 : 0,
-    created_at
-  );
-  recordEvent("critique.added", {
+  const id = genId("crt");
+  const { data, error } = await db
+    .from("critiques")
+    .insert({
+      id,
+      mission_id: input.mission_id,
+      thesis_id: input.thesis_id,
+      persona: input.persona,
+      severity: input.severity,
+      category: input.category ?? null,
+      specific_concern: input.specific_concern,
+      suggested_fix: input.suggested_fix ?? null,
+      blocks: input.blocks === true,
+    })
+    .select("*")
+    .single();
+  if (error) throw new Error(`addCritique failed: ${error.message}`);
+  await recordEvent("critique.added", {
     mission_id: input.mission_id,
     persona: input.persona,
     severity: input.severity,
   });
-  return db.prepare(`SELECT * FROM critiques WHERE id = ?`).get(id) as Critique;
+  return data as Critique;
 }
 
-export function listCritiques(missionId: string): Critique[] {
-  return getDb()
-    .prepare(`SELECT * FROM critiques WHERE mission_id = ? ORDER BY datetime(created_at) ASC`)
-    .all(missionId) as Critique[];
+export async function listCritiques(missionId: string): Promise<Critique[]> {
+  const { data, error } = await getDb()
+    .from("critiques")
+    .select("*")
+    .eq("mission_id", missionId)
+    .order("created_at", { ascending: true });
+  if (error) throw new Error(`listCritiques failed: ${error.message}`);
+  return (data ?? []) as Critique[];
 }
 
 export interface NewDossierInput {
@@ -295,44 +368,74 @@ export interface NewDossierInput {
   doc_type: "synthesis" | "dossier";
 }
 
-export function addDossier(input: NewDossierInput): Dossier {
+export async function addDossier(input: NewDossierInput): Promise<Dossier> {
   const db = getDb();
-  const id = "dos_" + shortId().replace(/-/g, "").slice(0, 16);
-  const created_at = nowIso();
-  db.prepare(
-    `INSERT INTO dossiers (id, mission_id, title, content, content_chars, doc_type, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).run(id, input.mission_id, input.title, input.content, input.content.length, input.doc_type, created_at);
-  recordEvent("dossier.added", {
+  const id = genId("dos");
+  const { data, error } = await db
+    .from("dossiers")
+    .insert({
+      id,
+      mission_id: input.mission_id,
+      title: input.title,
+      content: input.content,
+      content_chars: input.content.length,
+      doc_type: input.doc_type,
+    })
+    .select("*")
+    .single();
+  if (error) throw new Error(`addDossier failed: ${error.message}`);
+  await recordEvent("dossier.added", {
     mission_id: input.mission_id,
     doc_type: input.doc_type,
   });
-  return db.prepare(`SELECT * FROM dossiers WHERE id = ?`).get(id) as Dossier;
+  return data as Dossier;
 }
 
-export function listDossiers(missionId: string): Dossier[] {
-  return getDb()
-    .prepare(`SELECT * FROM dossiers WHERE mission_id = ? ORDER BY datetime(created_at) ASC`)
-    .all(missionId) as Dossier[];
+export async function listDossiers(missionId: string): Promise<Dossier[]> {
+  const { data, error } = await getDb()
+    .from("dossiers")
+    .select("*")
+    .eq("mission_id", missionId)
+    .order("created_at", { ascending: true });
+  if (error) throw new Error(`listDossiers failed: ${error.message}`);
+  return (data ?? []) as Dossier[];
 }
 
-export function listMissionTasks(missionId: string): Task[] {
-  return getDb()
-    .prepare(`SELECT * FROM tasks WHERE mission_id = ? ORDER BY datetime(created_at) ASC`)
-    .all(missionId) as Task[];
+export async function listMissionTasks(missionId: string): Promise<Task[]> {
+  const { data, error } = await getDb()
+    .from("tasks")
+    .select("*")
+    .eq("mission_id", missionId)
+    .order("created_at", { ascending: true });
+  if (error) throw new Error(`listMissionTasks failed: ${error.message}`);
+  return (data ?? []) as Task[];
 }
 
-export function poolStats(): { pool: string; total: number; completed: number; running: number; failed: number }[] {
-  return getDb()
-    .prepare(
-      `SELECT pool,
-              COUNT(*) AS total,
-              SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
-              SUM(CASE WHEN status = 'running'   THEN 1 ELSE 0 END) AS running,
-              SUM(CASE WHEN status = 'failed'    THEN 1 ELSE 0 END) AS failed
-       FROM tasks GROUP BY pool`
-    )
-    .all() as { pool: string; total: number; completed: number; running: number; failed: number }[];
+export interface PoolStatRow {
+  pool: string;
+  total: number;
+  completed: number;
+  running: number;
+  failed: number;
+}
+
+export async function poolStats(): Promise<PoolStatRow[]> {
+  // No SQL aggregation in PostgREST — pull the slim columns and bucket in JS.
+  const { data, error } = await getDb().from("tasks").select("pool, status");
+  if (error) throw new Error(`poolStats failed: ${error.message}`);
+  const rows = (data ?? []) as { pool: string; status: string }[];
+  const byPool = new Map<string, PoolStatRow>();
+  for (const r of rows) {
+    const cur =
+      byPool.get(r.pool) ??
+      ({ pool: r.pool, total: 0, completed: 0, running: 0, failed: 0 } as PoolStatRow);
+    cur.total += 1;
+    if (r.status === "completed") cur.completed += 1;
+    else if (r.status === "running") cur.running += 1;
+    else if (r.status === "failed") cur.failed += 1;
+    byPool.set(r.pool, cur);
+  }
+  return Array.from(byPool.values());
 }
 
 export interface DashboardSummary {
@@ -351,59 +454,110 @@ export interface DashboardSummary {
   active_agents: number;
 }
 
-export function dashboardSummary(): DashboardSummary {
-  const db = getDb();
-  const r = db
-    .prepare(
-      `SELECT
-        (SELECT COUNT(*) FROM missions) AS total_missions,
-        (SELECT COUNT(*) FROM findings) AS total_findings,
-        (SELECT COUNT(*) FROM theses) AS total_theses,
-        (SELECT COUNT(*) FROM critiques) AS total_critiques,
-        (SELECT COUNT(*) FROM tasks) AS total_tasks,
-        (SELECT COUNT(*) FROM findings WHERE evidence_grade = 'A') AS grade_a_findings,
-        (SELECT COUNT(*) FROM findings WHERE evidence_grade = 'B') AS grade_b_findings,
-        (SELECT COUNT(*) FROM findings WHERE evidence_grade = 'C') AS grade_c_findings,
-        (SELECT COUNT(*) FROM findings WHERE evidence_grade = 'D') AS grade_d_findings,
-        (SELECT COUNT(*) FROM findings WHERE evidence_grade = 'X') AS grade_x_findings,
-        (SELECT COUNT(*) FROM findings WHERE source_type = 'pubmed') AS pubmed_findings,
-        (SELECT COUNT(*) FROM findings WHERE source_type != 'pubmed') AS swarm_findings,
-        (SELECT COUNT(*) FROM tasks WHERE status = 'running') AS active_agents`
-    )
-    .get() as DashboardSummary;
-  return r;
+interface CountLike {
+  count: number | null;
+  error: { message: string } | null;
 }
 
-export function recordEvent(kind: string, payload: Record<string, unknown> & { mission_id?: string; pool?: AgentPool }): void {
+async function takeCount(label: string, result: PromiseLike<CountLike>): Promise<number> {
+  const { count, error } = await result;
+  if (error) throw new Error(`${label} failed: ${error.message}`);
+  return count ?? 0;
+}
+
+export async function dashboardSummary(): Promise<DashboardSummary> {
+  const db = getDb();
+  const opts = { count: "exact" as const, head: true };
+  const [
+    total_missions,
+    total_findings,
+    total_theses,
+    total_critiques,
+    total_tasks,
+    grade_a_findings,
+    grade_b_findings,
+    grade_c_findings,
+    grade_d_findings,
+    grade_x_findings,
+    pubmed_findings,
+    swarm_findings,
+    active_agents,
+  ] = await Promise.all([
+    takeCount("count(missions)", db.from("missions").select("*", opts)),
+    takeCount("count(findings)", db.from("findings").select("*", opts)),
+    takeCount("count(theses)", db.from("theses").select("*", opts)),
+    takeCount("count(critiques)", db.from("critiques").select("*", opts)),
+    takeCount("count(tasks)", db.from("tasks").select("*", opts)),
+    takeCount("count(findings A)", db.from("findings").select("*", opts).eq("evidence_grade", "A")),
+    takeCount("count(findings B)", db.from("findings").select("*", opts).eq("evidence_grade", "B")),
+    takeCount("count(findings C)", db.from("findings").select("*", opts).eq("evidence_grade", "C")),
+    takeCount("count(findings D)", db.from("findings").select("*", opts).eq("evidence_grade", "D")),
+    takeCount("count(findings X)", db.from("findings").select("*", opts).eq("evidence_grade", "X")),
+    takeCount("count(findings pubmed)", db.from("findings").select("*", opts).eq("source_type", "pubmed")),
+    takeCount("count(findings non-pubmed)", db.from("findings").select("*", opts).neq("source_type", "pubmed")),
+    takeCount("count(tasks running)", db.from("tasks").select("*", opts).eq("status", "running")),
+  ]);
+
+  return {
+    total_missions,
+    total_findings,
+    total_theses,
+    total_critiques,
+    total_tasks,
+    grade_a_findings,
+    grade_b_findings,
+    grade_c_findings,
+    grade_d_findings,
+    grade_x_findings,
+    pubmed_findings,
+    swarm_findings,
+    active_agents,
+  };
+}
+
+export async function recordEvent(
+  kind: string,
+  payload: Record<string, unknown> & { mission_id?: string; pool?: AgentPool }
+): Promise<void> {
   try {
-    getDb()
-      .prepare(`INSERT INTO events (mission_id, kind, pool, payload, created_at) VALUES (?, ?, ?, ?, ?)`)
-      .run(
-        payload.mission_id ?? null,
+    await getDb()
+      .from("events")
+      .insert({
+        mission_id: payload.mission_id ?? null,
         kind,
-        payload.pool ?? null,
-        JSON.stringify(payload),
-        nowIso()
-      );
+        pool: payload.pool ?? null,
+        payload,
+      });
   } catch {
     // never throw on telemetry
   }
 }
 
-export function eventsSince(sinceId: number, missionId?: string | null, limit = 200): SwarmEvent[] {
-  if (missionId) {
-    return getDb()
-      .prepare(
-        `SELECT * FROM events WHERE id > ? AND (mission_id = ? OR mission_id IS NULL) ORDER BY id ASC LIMIT ?`
-      )
-      .all(sinceId, missionId, limit) as SwarmEvent[];
-  }
-  return getDb()
-    .prepare(`SELECT * FROM events WHERE id > ? ORDER BY id ASC LIMIT ?`)
-    .all(sinceId, limit) as SwarmEvent[];
+export async function eventsSince(
+  sinceId: number,
+  missionId?: string | null,
+  limit = 200
+): Promise<SwarmEvent[]> {
+  const db = getDb();
+  let q = db
+    .from("events")
+    .select("*")
+    .gt("id", sinceId)
+    .order("id", { ascending: true })
+    .limit(limit);
+  if (missionId) q = q.or(`mission_id.eq.${missionId},mission_id.is.null`);
+  const { data, error } = await q;
+  if (error) throw new Error(`eventsSince failed: ${error.message}`);
+  return (data ?? []) as SwarmEvent[];
 }
 
-export function lastEventId(): number {
-  const r = getDb().prepare(`SELECT COALESCE(MAX(id), 0) AS id FROM events`).get() as { id: number };
-  return r.id;
+export async function lastEventId(): Promise<number> {
+  const { data, error } = await getDb()
+    .from("events")
+    .select("id")
+    .order("id", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw new Error(`lastEventId failed: ${error.message}`);
+  return (data?.id as number | undefined) ?? 0;
 }

@@ -53,8 +53,8 @@ export interface Task {
   pool: AgentPool;
   agent_index: number;
   status: TaskStatus;
-  input: string | null;
-  output: string | null;
+  input: unknown | null;
+  output: unknown | null;
   error: string | null;
   started_at: string | null;
   completed_at: string | null;
@@ -74,7 +74,7 @@ export interface Finding {
   relevance_score: number | null;
   evidence_grade: EvidenceGrade | null;
   target: string | null;
-  metadata: string | null;
+  metadata: Record<string, unknown> | null;
   created_at: string;
 }
 
@@ -101,7 +101,7 @@ export interface Critique {
   category: string | null;
   specific_concern: string;
   suggested_fix: string | null;
-  blocks: number;
+  blocks: boolean;
   created_at: string;
 }
 
@@ -120,7 +120,7 @@ export interface SwarmEvent {
   mission_id: string | null;
   kind: string;
   pool: AgentPool | null;
-  payload: string | null;
+  payload: Record<string, unknown> | null;
   created_at: string;
 }
 

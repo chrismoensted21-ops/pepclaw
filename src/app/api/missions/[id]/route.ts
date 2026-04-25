@@ -13,14 +13,14 @@ export const dynamic = "force-dynamic";
 
 export async function GET(_req: NextRequest, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
-  const mission = getMission(id);
+  const mission = await getMission(id);
   if (!mission) return NextResponse.json({ error: "not_found" }, { status: 404 });
-  return NextResponse.json({
-    mission,
-    tasks: listMissionTasks(id),
-    findings: listFindings(id),
-    theses: listTheses(id),
-    critiques: listCritiques(id),
-    dossiers: listDossiers(id),
-  });
+  const [tasks, findings, theses, critiques, dossiers] = await Promise.all([
+    listMissionTasks(id),
+    listFindings(id),
+    listTheses(id),
+    listCritiques(id),
+    listDossiers(id),
+  ]);
+  return NextResponse.json({ mission, tasks, findings, theses, critiques, dossiers });
 }

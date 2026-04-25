@@ -14,7 +14,7 @@ const StartSchema = z.object({
 });
 
 export async function GET() {
-  return NextResponse.json({ missions: listMissions(50) });
+  return NextResponse.json({ missions: await listMissions(50) });
 }
 
 export async function POST(req: NextRequest) {

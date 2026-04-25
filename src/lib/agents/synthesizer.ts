@@ -3,9 +3,11 @@ import { chat } from "../llm";
 import type { AgentContext } from "./index";
 
 export async function runSynthesizer(ctx: AgentContext) {
-  const findings = listFindings(ctx.missionId);
-  const theses = listTheses(ctx.missionId);
-  const critiques = listCritiques(ctx.missionId);
+  const [findings, theses, critiques] = await Promise.all([
+    listFindings(ctx.missionId),
+    listTheses(ctx.missionId),
+    listCritiques(ctx.missionId),
+  ]);
 
   const summarized = findings
     .slice(0, 30)
@@ -40,7 +42,7 @@ ${critiquesBlock || "(none)"}`;
   });
 
   const content = out.text || "(synthesis produced no content)";
-  addDossier({
+  await addDossier({
     mission_id: ctx.missionId,
     title: `Synthesis · ${ctx.query.slice(0, 60)}`,
     content,

@@ -6,11 +6,14 @@ import type { AgentContext } from "./index";
  * Deterministic — does NOT call the LLM; uses stored swarm state.
  */
 export async function runDossierAssembler(ctx: AgentContext) {
-  const mission = getMission(ctx.missionId);
-  const findings = listFindings(ctx.missionId);
-  const theses = listTheses(ctx.missionId);
-  const critiques = listCritiques(ctx.missionId);
-  const synthesisDocs = listDossiers(ctx.missionId).filter((d) => d.doc_type === "synthesis");
+  const [mission, findings, theses, critiques, allDossiers] = await Promise.all([
+    getMission(ctx.missionId),
+    listFindings(ctx.missionId),
+    listTheses(ctx.missionId),
+    listCritiques(ctx.missionId),
+    listDossiers(ctx.missionId),
+  ]);
+  const synthesisDocs = allDossiers.filter((d) => d.doc_type === "synthesis");
 
   const grade = (g: string | null) => (g ? `[${g}]` : "[?]");
   const head = (s: string) => `\n\n## ${s}\n`;
@@ -19,7 +22,7 @@ export async function runDossierAssembler(ctx: AgentContext) {
   const pubmedBlock = pubmed
     .slice(0, 30)
     .map((f) => {
-      const meta = safeJson<{ year?: number; journal?: string }>(f.metadata) ?? {};
+      const meta = (f.metadata ?? {}) as { year?: number; journal?: string };
       const pmid = f.source_ref.replace(/^pubmed:/, "");
       return `- ${grade(f.evidence_grade)} ${f.title ?? "(untitled)"} — _${meta.journal ?? "n/a"}_, ${meta.year ?? "n/a"}. [PMID:${pmid}](${f.url ?? `https://pubmed.ncbi.nlm.nih.gov/${pmid}/`})`;
     })
@@ -86,7 +89,7 @@ ${c.map((cr) => `  - _${cr.persona}/${cr.severity}_: ${cr.specific_concern}${cr.
     .filter(Boolean)
     .join("\n");
 
-  addDossier({
+  await addDossier({
     mission_id: ctx.missionId,
     title: `Dossier · ${(mission?.query ?? ctx.query).slice(0, 60)}`,
     content: md,
@@ -94,13 +97,4 @@ ${c.map((cr) => `  - _${cr.persona}/${cr.severity}_: ${cr.specific_concern}${cr.
   });
 
   return { summary: `Dossier assembled (${md.length} chars · ${pubmed.length} PMIDs cited)` };
-}
-
-function safeJson<T>(s: string | null): T | null {
-  if (!s) return null;
-  try {
-    return JSON.parse(s) as T;
-  } catch {
-    return null;
-  }
 }

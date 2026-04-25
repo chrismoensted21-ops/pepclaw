@@ -14,7 +14,7 @@ interface ThesisJson {
 }
 
 export async function runThesisGenerator(ctx: AgentContext) {
-  const findings = listFindings(ctx.missionId);
+  const findings = await listFindings(ctx.missionId);
   if (findings.length === 0) {
     return { summary: "No findings available; thesis generation skipped." };
   }
@@ -62,7 +62,7 @@ Compose ONE engineered-peptide thesis grounded in this evidence. Reply with stri
     parsed?.evidence_summary?.trim() ||
     `Built from ${corpus.length} pool findings (${corpus.filter((c) => c.evidence_grade === "A").length} grade-A).`;
 
-  addThesis({
+  await addThesis({
     mission_id: ctx.missionId,
     title,
     hypothesis,

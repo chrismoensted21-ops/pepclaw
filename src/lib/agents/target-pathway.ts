@@ -8,7 +8,7 @@ export async function runTargetPathway(ctx: AgentContext) {
   let added = 0;
   for (const a of assocs) {
     const top = a.topDiseases.slice(0, 5);
-    addFinding({
+    await addFinding({
       mission_id: ctx.missionId,
       task_id: ctx.taskId,
       pool: "target_pathway",
