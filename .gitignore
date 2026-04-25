@@ -1,0 +1,47 @@
+# --- Node ----------------------------------------------------------
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.pnpm-store/
+
+# --- Next.js -------------------------------------------------------
+.next/
+out/
+build/
+dist/
+*.tsbuildinfo
+next-env.d.ts
+
+# --- Pepclaw runtime ----------------------------------------------
+.data/
+*.db
+*.db-shm
+*.db-wal
+
+# --- Env -----------------------------------------------------------
+.env
+.env.*
+!.env.example
+.tmp-*.json
+
+# --- IDE / OS ------------------------------------------------------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Logs / coverage ----------------------------------------------
+coverage/
+*.log
+logs/
+
+# --- Cursor / agent transcripts -----------------------------------
+.cursor/
+agent-transcripts/
+terminals/
+
+# --- Misc ----------------------------------------------------------
+.eslintcache
+.swc/
