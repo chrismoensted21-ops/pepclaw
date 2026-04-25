@@ -41,7 +41,7 @@ export function SiteNav({ active }: NavProps) {
     <div
       className={cn(
         "fixed left-1/2 z-40 -translate-x-1/2 transition-all duration-500",
-        "w-[min(calc(100vw-1.5rem),920px)] flex justify-center",
+        "w-[min(calc(100vw-1.5rem),760px)] flex justify-center",
         scrolled ? "top-2" : "top-4"
       )}
     >
@@ -90,7 +90,7 @@ export function SiteNav({ active }: NavProps) {
         >
           Open app
         </Link>
-        <div className="mx-1 hidden h-5 w-px bg-white/[0.08] md:block" />
+        <div className="mx-1 hidden h-5 w-px bg-white/[0.08] md:ml-auto md:block" />
         <a
           href="https://x.com/pepclawresearch"
           target="_blank"
